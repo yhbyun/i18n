@@ -20,16 +20,8 @@
         }
     },
     "require": {
-        "php": "^8.0 || ^8.1",
-        "illuminate/translation": "^9.0 || ^10.0 || ^11.0",
-        "illuminate/config": "^9.0 || ^10.0 || ^11.0",
-        "illuminate/support": "^9.0 || ^10.0 || ^11.0",
-        "illuminate/view": "^9.0 || ^10.0 || ^11.0",
-        "illuminate/filesystem": "^9.0 || ^10.0 || ^11.0"
     },
     "require-dev": {
-        "laravel/laravel": "^10.0",
-        "phpunit/phpunit": "^10.0"
     },
     "scripts": {
         "test": "vendor/bin/phpunit"
