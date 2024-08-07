@@ -2,6 +2,8 @@
 
 namespace Pine\I18n;
 
+use Illuminate\Contracts\Support\Arrayable;
+use Illuminate\Contracts\Support\Jsonable;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Blade;
 use Illuminate\Support\Facades\File;
@@ -9,6 +11,11 @@ use Illuminate\Support\ServiceProvider;
 
 class I18nServiceProvider extends ServiceProvider
 {
+
+    public function register()
+    {
+    }
+
     /**
      * Bootstrap any application services.
      *
@@ -18,12 +25,19 @@ class I18nServiceProvider extends ServiceProvider
     {
         // Publish the assets
         $this->publishes([
-            __DIR__.'/../resources/js' => resource_path('js/vendor'),
+            __DIR__.'/../resources/js' => base_path('resources/js/vendor'),
         ]);
 
         // Register the @translations blade directive
-        Blade::directive('translations', function ($key) {
-            $cases = $this->translations()->map(function ($translations, $locale) {
+        // expiression: key in window, resource keys to include
+        Blade::directive('translations', function ($expression) {
+            // logger('rebuilding....');
+            $expression = preg_replace("/[\(\)]/", '', $expression);
+            eval("\$params = [$expression];");
+            list($key, $includes) = array_pad($params, 2, null);
+            $includes = array_map('trim', explode(',', $includes));
+
+            $cases = $this->translations($includes)->map(function ($translations, $locale) {
                 return sprintf(
                     config('app.fallback_locale') === $locale
                         ? 'default: echo "%2$s"; break;'
@@ -33,7 +47,7 @@ class I18nServiceProvider extends ServiceProvider
             })->implode(' ');
 
             return sprintf(
-                '<script>window[%s] = <?php switch (App::getLocale()) { %s } ?>;</script>',
+                '<script>window[\'%s\'] = <?php switch (App::getLocale()) { %s } ?>;</script>',
                 $key ?: "'translations'", $cases
             );
         });
@@ -44,38 +58,44 @@ class I18nServiceProvider extends ServiceProvider
      *
      * @return \Illuminate\Support\Collection
      */
-    protected function translations(): Collection
+    protected function translations(array $includes = []): Collection
     {
         $path = null;
 
         if (is_dir(base_path('lang'))) {
             $path = base_path('lang');
-        } elseif (is_dir(resource_path('lang'))) {
-            $path = resource_path('lang');
+        } elseif (is_dir(base_path('resources/lang'))) {
+            $path = base_path('resources/lang');
         } elseif (is_dir(base_path('vendor/laravel/framework/src/Illuminate/Translation/lang'))) {
             $path = base_path('vendor/laravel/framework/src/Illuminate/Translation/lang');
         }
 
-        $translations = is_null($path) ? collect() : collect(File::directories($path))->mapWithKeys(function ($dir) {
+        $translations = is_null($path) ? collect() : $this->mapWithKeys(collect(File::directories($path)), function ($dir) use ($includes) {
             return [
-                basename($dir) => collect($this->getFiles($dir))->flatMap(function ($file) {
-                    return [
-                        $file->getBasename('.php') => (include $file->getPathname()),
-                    ];
+                basename($dir) => collect($this->getFiles($dir))->flatMap(function ($file) use ($includes) {
+                    if (in_array(basename($file, '.php'), $includes)) {
+                        return [
+                            basename($file, '.php') => (include $file),
+                        ];
+                    } else {
+                        return [];
+                    }
                 }),
             ];
         });
 
         $jsonTranslations = $this->jsonTranslations($path);
 
-        $packageTranslations = $this->packageTranslations();
+        // $packageTranslations = $this->packageTranslations();
 
-        return $translations->keys()
-                            ->merge($packageTranslations->keys())
-                            ->merge($jsonTranslations->keys())
-                            ->unique()
-                            ->values()
-                            ->mapWithKeys(function ($locale) use ($translations, $jsonTranslations, $packageTranslations) {
+        return $this->mapWithKeys(
+            $translations->keys()
+                // ->merge($packageTranslations->keys())
+                ->merge($jsonTranslations->keys())
+                ->unique()
+                ->values()
+                // ->mapWithKeys(function ($locale) use ($translations, $jsonTranslations, $packageTranslations) {
+            , function ($locale) use ($translations, $jsonTranslations) {
                                 $locales = array_unique([
                                     $locale,
                                     config('app.fallback_locale'),
@@ -93,7 +113,7 @@ class I18nServiceProvider extends ServiceProvider
                                  *          (Paragraph "Key / File conflicts")
                                  */
                                 $prioritizedTranslations = [
-                                    $packageTranslations,
+                                    // $packageTranslations,
                                     $translations,
                                     $jsonTranslations,
                                 ];
@@ -102,7 +122,8 @@ class I18nServiceProvider extends ServiceProvider
                                 foreach ($prioritizedTranslations as $t) {
                                     foreach ($locales as $l) {
                                         if ($t->has($l)) {
-                                            $fullTranslations = $fullTranslations->replace($t->get($l));
+                                            // $fullTranslations = $fullTranslations->replace($t->get($l));
+                                            $fullTranslations = collect(array_replace($fullTranslations->all(), $this->getArrayableItems($t->get($l))));
                                             break;
                                         }
                                     }
@@ -150,14 +171,10 @@ class I18nServiceProvider extends ServiceProvider
      */
     protected function jsonTranslations($dir)
     {
-        return collect(File::glob($dir . '/*.json'))
-            ->mapWithKeys(function ($path) {
+        return $this->mapWithKeys(collect(File::glob($dir . '/*.json')),
+            function ($path) {
                 return [
-                    basename($path, '.json') => json_decode(
-                        json: file_get_contents($path),
-                        associative: true,
-                        flags: JSON_THROW_ON_ERROR,
-                    ),
+                    basename($path, '.json') => json_decode(file_get_contents($path), true, 512, JSON_THROW_ON_ERROR),
                 ];
             });
     }
@@ -171,5 +188,33 @@ class I18nServiceProvider extends ServiceProvider
     protected function getFiles($dir)
     {
         return is_dir($dir) ? File::files($dir) : [];
+    }
+
+    protected function mapWithKeys(Collection $collection, callable $callback)
+    {
+        $result = [];
+
+        foreach ($collection->all() as $key => $value) {
+            $assoc = $callback($value, $key);
+
+            foreach ($assoc as $mapKey => $mapValue) {
+                $result[$mapKey] = $mapValue;
+            }
+        }
+
+        return new Collection($result);
+    }
+
+    protected function getArrayableItems($items)
+    {
+        if ($items instanceof Collection) {
+            return $items->all();
+        } elseif ($items instanceof Arrayable) {
+            return $items->toArray();
+        } elseif ($items instanceof Jsonable) {
+            return json_decode($items->toJson(), true);
+        }
+
+        return (array) $items;
     }
 }
